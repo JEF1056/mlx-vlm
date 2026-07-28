@@ -3496,14 +3496,25 @@ class TurboQuantSplitState(NamedTuple):
     high: object
 
 
-def _validate_bits(bits: float) -> float:
+def _validate_bits(bits) -> float:
+    bits_str = str(bits)
+    if '.' in bits_str:
+        parts = bits_str.split('.')
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            key_b = int(parts[0])
+            val_b = int(parts[1])
+            if key_b < 1 or val_b < 1:
+                raise ValueError(f"TurboQuant requires kv_bits >= 1, got {bits}.")
+            if val_b != 0:
+                return float(f"{key_b}.{val_b}")
+
     bits = float(bits)
     if bits < 1:
         raise ValueError("TurboQuant requires kv_bits >= 1.")
     rounded = round(bits * 2) / 2
     if not math.isclose(bits, rounded, abs_tol=1e-6):
         raise ValueError(
-            f"TurboQuant currently supports integer and .5 bit-widths, got {bits}."
+            f"TurboQuant currently supports integer, .5, and X.Y bit-widths (e.g., 4.2 for 4-bit keys, 2-bit values), got {bits}."
         )
     return rounded
 
@@ -3514,11 +3525,24 @@ def resolve_kv_bits(
     value_bits: Optional[float] = None,
 ) -> Tuple[float, float, float]:
     bits = _validate_bits(bits)
-    fractional = not math.isclose(bits, round(bits), abs_tol=1e-6)
+    bits_str = str(bits)
+    if '.' in bits_str:
+        parts = bits_str.split('.')
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() and len(parts[1]) == 1 and parts[1] != '5' and parts[1] != '0':
+            default_key = int(parts[0])
+            default_val = int(parts[1])
+        else:
+            fractional = not math.isclose(bits, round(bits), abs_tol=1e-6)
+            default_key = math.floor(bits) if fractional else bits
+            default_val = math.ceil(bits) if fractional else bits
+    else:
+        fractional = not math.isclose(bits, round(bits), abs_tol=1e-6)
+        default_key = math.floor(bits) if fractional else bits
+        default_val = math.ceil(bits) if fractional else bits
     if key_bits is None:
-        key_bits = math.floor(bits) if fractional else bits
+        key_bits = default_key
     if value_bits is None:
-        value_bits = math.ceil(bits) if fractional else bits
+        value_bits = default_val
     return bits, _validate_bits(key_bits), _validate_bits(value_bits)
 
 
