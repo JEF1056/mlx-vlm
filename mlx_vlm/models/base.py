@@ -266,6 +266,13 @@ def quantized_scaled_dot_product_attention(
     group_size: int = 64,
     bits: int = 8,
 ) -> mx.array:
+    """Quantized SDPA with optimized path for single-token decode.
+
+    During decode (L=1), quantized_matmul is already optimal — no need for
+    the standard scaled_dot_product_attention dequantize-then-matmul path.
+    This function uses the quantized matmul path for ALL cases, which is
+    faster on Apple Silicon for kv-bits <= 4.
+    """
     B, n_q_heads, L, D = queries.shape
     n_kv_heads = q_keys[0].shape[-3]
     n_repeats = n_q_heads // n_kv_heads
@@ -311,26 +318,37 @@ def scaled_dot_product_attention(
     mask: Optional[mx.array],
     sinks: Optional[mx.array] = None,
 ) -> mx.array:
+    """Scaled dot-product attention with optimized paths for quantized caches.
+
+    For TurboQuant caches, use the native turboquant attention methods which
+    skip dequantization entirely during decode. For BatchTurboQuant, always
+    dequantize once and use the fused SDPA kernel.
+    """
     if isinstance(cache, TurboQuantKVCache):
         if sinks is not None:
             raise ValueError("TurboQuant KV cache does not support attention sinks.")
+        # TurboQuant has native attention methods that avoid dequantization
         if queries.shape[-2] == 1:
-            return cache.decode_attention(
+            result = cache.decode_attention(
                 queries,
                 keys_state=keys,
                 values_state=values,
                 scale=scale,
                 mask=mask,
             )
-        result = cache.prefill_attention(
-            queries,
-            keys_state=keys,
-            values_state=values,
-            scale=scale,
-            mask=mask,
-        )
-        if result is not None:
-            return result
+            if result is not None:
+                return result
+        else:
+            result = cache.prefill_attention(
+                queries,
+                keys_state=keys,
+                values_state=values,
+                scale=scale,
+                mask=mask,
+            )
+            if result is not None:
+                return result
+        # Fallback: dequantize and use fused SDPA
         dequantized_keys, dequantized_values = cache.dequantize(keys, values)
         return mx.fast.scaled_dot_product_attention(
             queries,
@@ -350,8 +368,7 @@ def scaled_dot_product_attention(
             mask=mask,
         )
 
- 
-
+    # Standard path: always use fused SDPA kernel
     return mx.fast.scaled_dot_product_attention(
         queries,
         keys,
