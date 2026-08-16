@@ -1698,6 +1698,7 @@ class Qwen3_5Attention(nn.Module):
         B, L, D = x.shape
 
         # Try fused QKV + RMSNorm + RoPE during decode phase (single token)
+        fused_result = None
         if L == 1 and not target_verify:
             fused_result = _decode_quantized_qkv_fused(
                 (self.q_proj, self.k_proj, self.v_proj),
@@ -1712,8 +1713,9 @@ class Qwen3_5Attention(nn.Module):
                 self.num_key_value_heads,
                 self.head_dim,
             )
-            if fused_result is not None:
-                queries, keys, values, gate, kv_seq_len, position_ids = fused_result
+
+        if fused_result is not None:
+            queries, keys, values, gate, kv_seq_len, position_ids = fused_result
         else:
             # Original path for prefix / target_verify / non-quantized
             q_proj_output, keys, values = _target_verify_linears(

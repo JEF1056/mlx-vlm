@@ -1789,7 +1789,7 @@ class ResponseGenerator:
                                 "Generation cancelled: request=%s generated_tokens=%d",
                                 info.get("request_id", uid),
                                 int(info.get("generated_tokens", 0) or 0),
-   )
+                            )
                             try:
                                 info["rqueue"].put(None)
                             except Exception:
@@ -2216,7 +2216,7 @@ class ResponseGenerator:
                         if row_snapshot is not None and ids_list:
                             self.apc_manager.store_exact_cache(
                                 ids_list, row_snapshot, extra_hash=extra_hash
-   )
+                            )
                 hidden = speculative_hidden_state(draft_kind, out)
                 shared_kv_states = out.shared_kv_states if is_mtp else None
                 sample_row_ids = [0] * B
@@ -2354,11 +2354,11 @@ class ResponseGenerator:
                                 peak_memory=mx.get_peak_memory() / 1e9 if finish else 0,
                                 prompt_tps=prompt_tps_map.get(uid),
                                 emitted_at=emitted_at,
-                                 draft_kind=draft_kind if finish else None,
-                                 draft_rounds=rounds,
-                                 draft_n_accepted=accepted,
-                                 draft_n=drafted,
-                             )
+                                draft_kind=draft_kind if finish else None,
+                                draft_rounds=rounds,
+                                draft_n_accepted=accepted,
+                                draft_n=drafted,
+                            )
                         )
 
                         if finish is not None:
@@ -2405,11 +2405,11 @@ class ResponseGenerator:
                                 prompt_tps=prompt_tps_map.get(uid),
                                 token_count=0,
                                 emitted_at=emitted_at,
-                                 draft_kind=(draft_kind if rounds is not None else None),
-                                 draft_rounds=rounds,
-                                 draft_n_accepted=accepted,
-                                 draft_n=drafted,
-                             )
+                                draft_kind=(draft_kind if rounds is not None else None),
+                                draft_rounds=rounds,
+                                draft_n_accepted=accepted,
+                                draft_n=drafted,
+                            )
                         )
                         rqueues[uid].put(None)
 
