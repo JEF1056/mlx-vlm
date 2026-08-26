@@ -1182,11 +1182,84 @@ class Qwen3_5Attention(nn.Module):
         self.k_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
 
         self.rotary_emb = Qwen3_5RotaryEmbedding(
-            int(self.head_dim * args.rope_parameters["partial_rotary_factor"]),
+            int(self.head_dim * args.rope_parameters[partial_rotary_factor]),
             max_position_embeddings=args.max_position_embeddings,
-            base=args.rope_parameters["rope_theta"],
-            mrope_section=args.rope_parameters["mrope_section"],
+            base=args.rope_parameters[rope_theta],
+            mrope_section=args.rope_parameters[mrope_section],
         )
+
+    def _prepare_projected_qkv(
+        self,
+        q_proj_output,
+        keys,
+        values,
+        cache,
+        position_ids,
+        position_embeddings,
+        mask,
+    ):
+        B, L, _ = q_proj_output.shape
+        queries, gate = mx.split(
+            q_proj_output.reshape(B, L, self.num_attention_heads, -1), 2, axis=-1
+        )
+        gate = gate.reshape(B, L, -1)
+
+        queries = self.q_norm(queries).transpose(0, 2, 1, 3)
+        keys = self.k_norm(keys.reshape(B, L, self.num_key_value_heads, -1)).transpose(
+            0, 2, 1, 3
+        )
+        values = values.reshape(B, L, self.num_key_value_heads, -1).transpose(
+            0, 2, 1, 3
+        )
+
+        kv_seq_len = keys.shape[-2]
+
+        if position_ids is None:
+            cache_offset = cache.offset if cache is not None else None
+            if isinstance(cache_offset, mx.array) and cache_offset.ndim > 0:
+                offsets = mx.maximum(cache_offset[:B], 0)
+                kv_seq_len = kv_seq_len + offsets + 1
+                position_ids = offsets[:, None] + mx.arange(L)[None, :]
+                position_ids = mx.expand_dims(position_ids, axis=0)
+                position_ids = mx.tile(position_ids, (3, 1, 1))
+            else:
+                if isinstance(cache_offset, mx.array):
+                    cache_offset = int(cache_offset.item())
+                elif cache_offset is None:
+                    cache_offset = 0
+                kv_seq_len += cache_offset + 1
+                position_ids = mx.arange(cache_offset, cache_offset + L)
+                position_ids = mx.expand_dims(position_ids, axis=0)
+                position_ids = mx.tile(position_ids, (3, 1, 1))
+        else:
+            kv_seq_len += cache.offset + 1 if cache is not None else 0
+
+        if position_embeddings is None:
+            queries, keys = self.rotary_emb.apply_rotary(
+                queries,
+                keys,
+                position_ids,
+                unsqueeze_dim=1,
+            )
+        else:
+            cos, sin = position_embeddings
+            queries, keys = apply_multimodal_rotary_pos_emb(queries, keys, cos, sin)
+
+        if mask is not None and isinstance(mask, mx.array):
+            if (
+                cache is not None
+                and hasattr(cache, _idx)
+                and hasattr(cache, left_padding)
+            ):
+                kv_seq_len = int(cache._idx) + L
+            elif isinstance(kv_seq_len, mx.array):
+                kv_seq_len = kv_seq_len.max().item()
+            mask = mask[..., : int(kv_seq_len)]
+
+        if cache is not None:
+            keys, values = cache.update_and_fetch(keys, values)
+
+        return queries, keys, values, gate, mask
 
     def __call__(
         self,
@@ -1195,10 +1268,10 @@ class Qwen3_5Attention(nn.Module):
         cache: Optional[Any] = None,
         position_ids: Optional[mx.array] = None,
         position_embeddings: Optional[tuple[mx.array, mx.array]] = None,
+        target_verify: bool = False,
     ) -> mx.array:
         B, L, D = x.shape
 
-        # Try fused QKV + RMSNorm + RoPE during decode phase (single token)
         fused_result = None
         if L == 1 and not target_verify:
             fused_result = _decode_quantized_qkv_fused(
@@ -1218,68 +1291,60 @@ class Qwen3_5Attention(nn.Module):
         if fused_result is not None:
             queries, keys, values, gate, kv_seq_len, position_ids = fused_result
         else:
-            # Original path for prefix / target_verify / non-quantized
             q_proj_output, keys, values = _target_verify_linears(
                 (self.q_proj, self.k_proj, self.v_proj), x, target_verify
             )
-            queries, gate = mx.split(
-                q_proj_output.reshape(B, L, self.num_attention_heads, -1), 2, axis=-1
-            )
-            gate = gate.reshape(B, L, -1)
-
-            queries = self.q_norm(queries).transpose(0, 2, 1, 3)
-            keys = self.k_norm(keys.reshape(B, L, self.num_key_value_heads, -1)).transpose(
-                0, 2, 1, 3
-            )
-            values = values.reshape(B, L, self.num_key_value_heads, -1).transpose(
-                0, 2, 1, 3
+            queries, keys, values, gate, mask = self._prepare_projected_qkv(
+                q_proj_output,
+                keys,
+                values,
+                cache,
+                position_ids,
+                position_embeddings,
+                mask,
             )
 
-            kv_seq_len = keys.shape[-2]
+        left_padded_decode = (
+            mask == left_padded_decode if isinstance(mask, str) else False
+        )
+        if left_padded_decode:
+            mask = None
 
-            if position_ids is None:
-                cache_offset = cache.offset
-                if isinstance(cache_offset, mx.array) and cache_offset.ndim > 0:
-                    offsets = mx.maximum(cache_offset[:B], 0)
-                    kv_seq_len = kv_seq_len + offsets + 1
-                    position_ids = offsets[:, None] + mx.arange(L)[None, :]
-                    position_ids = mx.expand_dims(position_ids, axis=0)
-                    position_ids = mx.tile(position_ids, (3, 1, 1))
-                else:
-                    if isinstance(cache_offset, mx.array):
-                        cache_offset = int(cache_offset.item())
-                    kv_seq_len += cache_offset + 1
-                    position_ids = mx.arange(cache_offset, cache_offset + L)
-                    position_ids = mx.expand_dims(position_ids, axis=0)
-                    position_ids = mx.tile(position_ids, (3, 1, 1))
-            else:
-                kv_seq_len += cache.offset + 1 if cache is not None else 0
+        if (target_verify and L > 1) or left_padded_decode:
+            output = _target_verify_left_padded_attention(
+                queries, keys, values, cache=cache, scale=self.scale, mask=mask
+            )
+        else:
+            output = None
 
-            if position_embeddings is None:
-                queries, keys = self.rotary_emb.apply_rotary(
-                    queries,
-                    keys,
-                    position_ids,
-                    unsqueeze_dim=1,
-                )
-            else:
-                cos, sin = position_embeddings
-                queries, keys = apply_multimodal_rotary_pos_emb(queries, keys, cos, sin)
+        if output is None and target_verify and L > 1:
+            prefix_len = keys.shape[-2] - L
+            output = mx.concatenate(
+                [
+                    scaled_dot_product_attention(
+                        queries[:, :, i : i + 1, :],
+                        keys[:, :, : prefix_len + i + 1, :],
+                        values[:, :, : prefix_len + i + 1, :],
+                        cache=cache,
+                        scale=self.scale,
+                        mask=(
+                            mask[..., i : i + 1, : prefix_len + i + 1]
+                            if isinstance(mask, mx.array) and mask.ndim >= 4
+                            else None
+                        ),
+                    )
+                    for i in range(L)
+                ],
+                axis=2,
+            )
 
-        if mask is not None and isinstance(mask, mx.array):
-            if (
-                cache is not None
-                and hasattr(cache, "_idx")
-                and hasattr(cache, "left_padding")
-            ):
-                kv_seq_len = int(cache._idx) + L
-            elif isinstance(kv_seq_len, mx.array):
-                kv_seq_len = kv_seq_len.max().item()
-            mask = mask[..., : int(kv_seq_len)]
+        if output is None:
+            output = scaled_dot_product_attention(
+                queries, keys, values, cache=cache, scale=self.scale, mask=mask
+            )
+        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
 
-        if cache is not None:
-            keys, values = cache.update_and_fetch(keys, values)
-        return queries, keys, values, gate, mask
+        return self.o_proj(output * mx.sigmoid(gate))
 
 
 class Qwen3_5MLP(nn.Module):
@@ -1354,6 +1419,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         inputs: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
+        gdn_sink: Optional[list] = None,
+        target_verify: bool = False,
     ) -> mx.array:
         B, S, _ = inputs.shape
         mixed_qkv, z, b, a = (
@@ -1500,12 +1567,16 @@ class Qwen3_5DecoderLayer(nn.Module):
         cache: Optional[Any] = None,
         position_ids: Optional[mx.array] = None,
         position_embeddings: Optional[tuple[mx.array, mx.array]] = None,
+        gdn_sink: Optional[list] = None,
+        target_verify: bool = False,
     ) -> mx.array:
         if self.is_linear:
             r = self.linear_attn(
                 self.input_layernorm(x),
                 mask,
                 cache,
+                gdn_sink=gdn_sink,
+                target_verify=target_verify,
             )
         else:
             r = self.self_attn(
@@ -1514,6 +1585,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 cache=cache,
                 position_ids=position_ids,
                 position_embeddings=position_embeddings,
+                target_verify=target_verify,
             )
         h = x + r
         return h + self.mlp(self.post_attention_layernorm(h))
@@ -1541,6 +1613,7 @@ class Qwen3_5Model(nn.Module):
         position_ids: Optional[mx.array] = None,
         capture_layer_ids: Optional[List[int]] = None,
         hidden_sink: Optional[list] = None,
+        gdn_sink: Optional[list] = None,
     ):
         if inputs_embeds is None:
             h = self.embed_tokens(inputs)
@@ -1683,6 +1756,8 @@ class Qwen3_5Model(nn.Module):
                 cache=c,
                 position_ids=position_ids,
                 position_embeddings=position_embeddings,
+                gdn_sink=gdn_sink,
+                target_verify=gdn_sink is not None,
             )
             if hidden_sink is not None and i in capture_set:
                 hidden_sink.append(h)
