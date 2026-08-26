@@ -1182,10 +1182,10 @@ class Qwen3_5Attention(nn.Module):
         self.k_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
 
         self.rotary_emb = Qwen3_5RotaryEmbedding(
-            int(self.head_dim * args.rope_parameters[partial_rotary_factor]),
+            int(self.head_dim * args.rope_parameters['partial_rotary_factor']),
             max_position_embeddings=args.max_position_embeddings,
-            base=args.rope_parameters[rope_theta],
-            mrope_section=args.rope_parameters[mrope_section],
+            base=args.rope_parameters['rope_theta'],
+            mrope_section=args.rope_parameters['mrope_section'],
         )
 
     def _prepare_projected_qkv(
