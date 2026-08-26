@@ -9,7 +9,7 @@ from ..qwen3_dflash.dflash import DFlashDecoderLayer, DFlashDraftModel
 from .config import DFlash2Config
 
 
-@partial(mx.compile, shapeless=True)
+@mx.compile
 def _grouped_dynamic_convolve(
     hidden: mx.array,
     dynamic: mx.array,
