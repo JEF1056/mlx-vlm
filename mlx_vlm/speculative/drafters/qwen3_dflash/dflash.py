@@ -199,6 +199,9 @@ class DFlashDraftModel(nn.Module):
         self.draft_lens = []
         return self.make_cache()
 
+    def prepare_target_hidden(self, target_hidden: mx.array) -> mx.array:
+        return self.hidden_norm(self.fc(target_hidden))
+
     def draft_block(
         self,
         last_bonus,
@@ -207,6 +210,7 @@ class DFlashDraftModel(nn.Module):
         block_size: int,
         sampler,
         token_dtype: mx.Dtype = mx.int32,
+        target_hidden_prepared: bool = False,
     ) -> mx.array:
         mask_id = int(self.config.mask_token_id)
         if isinstance(last_bonus, int):
@@ -220,7 +224,12 @@ class DFlashDraftModel(nn.Module):
             block = mx.concatenate(
                 [last_bonus[:, None].astype(token_dtype), masks], axis=1
             )
-        draft_hidden = self._hidden(block, hidden, cache)
+        draft_hidden = self._hidden(
+            block,
+            hidden,
+            cache,
+            target_hidden_prepared=target_hidden_prepared,
+        )
         draft_logits = self._logits(draft_hidden[:, 1:])
         return sampler(draft_logits)
 
@@ -229,9 +238,15 @@ class DFlashDraftModel(nn.Module):
         inputs: mx.array,
         target_hidden: mx.array,
         cache: List[KVCache],
+        *,
+        target_hidden_prepared: bool = False,
     ) -> mx.array:
         h = self._embed_input_tokens(inputs)
-        h_ctx = self.hidden_norm(self.fc(target_hidden))
+        h_ctx = (
+            target_hidden
+            if target_hidden_prepared
+            else self.prepare_target_hidden(target_hidden)
+        )
         for layer, c in zip(self.layers, cache):
             h = layer(h, h_ctx, self.rope, c)
         return self.norm(h)

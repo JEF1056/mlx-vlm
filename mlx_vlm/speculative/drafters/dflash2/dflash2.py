@@ -17,20 +17,22 @@ def _grouped_dynamic_convolve(
     group_size: int,
 ) -> mx.array:
     batch, length, hidden_size = hidden.shape
+    kernel_size = base.shape[0]
     groups = hidden_size // group_size
     blocks = hidden.reshape(batch, length, groups, group_size)
-    dynamic = dynamic.reshape(batch, length, base.shape[0], groups, 1)
+    dynamic = dynamic.reshape(batch, length, kernel_size, groups, 1)
+    kernel = base.reshape(1, 1, kernel_size, groups, group_size).astype(hidden.dtype)
+    weights = kernel + dynamic
+
+    if kernel_size == 1:
+        return (weights[:, :, 0] * blocks).reshape(hidden.shape)
+
+    padded = mx.pad(blocks, [(0, 0), (kernel_size - 1, 0), (0, 0), (0, 0)])
     output = mx.zeros_like(blocks)
-    for offset in range(base.shape[0]):
-        values = (
-            blocks
-            if offset == 0
-            else mx.concatenate(
-                [mx.zeros_like(blocks[:, :offset]), blocks[:, :-offset]], axis=1
-            )
-        )
-        kernel = base[offset].reshape(1, 1, groups, group_size).astype(hidden.dtype)
-        output = output + (kernel + dynamic[:, :, offset]) * values
+    for offset in range(kernel_size):
+        start = kernel_size - 1 - offset
+        values = padded[:, start : start + length]
+        output = output + weights[:, :, offset] * values
     return output.reshape(hidden.shape)
 
 
@@ -107,16 +109,15 @@ class CandidateSelector(nn.Module):
         candidates = mx.argpartition(logits, -self.top_k, axis=-1)[..., -self.top_k :]
         unary = mx.take_along_axis(logits, candidates, axis=-1)
         hidden = self.hidden_projection(hidden)
+        successor_emb = self.successor_codebook(candidates)
+        hidden_succ = hidden[:, :, None, :] * successor_emb
+
         predecessor = anchor_ids.reshape(-1)
         path = []
         sample_proposal = getattr(sampler, "sample_proposal", None)
         for position in range(hidden.shape[1]):
-            edges = mx.sum(
-                self.predecessor_codebook(predecessor)[:, None]
-                * hidden[:, position, None]
-                * self.successor_codebook(candidates[:, position]),
-                axis=-1,
-            )
+            pred_emb = self.predecessor_codebook(predecessor)[:, None, :]
+            edges = mx.sum(pred_emb * hidden_succ[:, position], axis=-1)
             scores = unary[:, position] + edges
             selected = (
                 sample_proposal(scores)
@@ -148,12 +149,33 @@ class DFlash2DraftModel(DFlashDraftModel):
         super().bind(target_model)
         return self
 
+    def prepare_target_hidden(self, target_hidden: mx.array) -> mx.array:
+        return self.hidden_norm(self.fc(target_hidden))
+
     def _embed_input_tokens(self, inputs: mx.array) -> mx.array:
         return (
             self.embed_tokens(inputs)
             * self.embed_scale
             * self.config.input_embedding_scale
         )
+
+    def _hidden(
+        self,
+        inputs: mx.array,
+        target_hidden: mx.array,
+        cache,
+        *,
+        target_hidden_prepared: bool = False,
+    ) -> mx.array:
+        h = self._embed_input_tokens(inputs)
+        h_ctx = (
+            target_hidden
+            if target_hidden_prepared
+            else self.prepare_target_hidden(target_hidden)
+        )
+        for layer, c in zip(self.layers, cache):
+            h = layer(h, h_ctx, self.rope, c)
+        return self.norm(h)
 
     def _logits(self, hidden: mx.array) -> mx.array:
         logits = self.lm_head(hidden) * self.config.output_multiplier
@@ -170,6 +192,7 @@ class DFlash2DraftModel(DFlashDraftModel):
         block_size: int,
         sampler: Callable[[mx.array], mx.array],
         token_dtype: mx.Dtype = mx.int32,
+        target_hidden_prepared: bool = False,
     ) -> mx.array:
         proposal_length = int(block_size) - 1
         if proposal_length <= 0:
@@ -186,7 +209,12 @@ class DFlash2DraftModel(DFlashDraftModel):
             dtype=token_dtype,
         )
         draft_inputs = mx.concatenate([anchor[:, None], masks], axis=1)
-        draft_hidden = self._hidden(draft_inputs, hidden, cache)[:, 1:]
+        draft_hidden = self._hidden(
+            draft_inputs,
+            hidden,
+            cache,
+            target_hidden_prepared=target_hidden_prepared,
+        )[:, 1:]
         return self.candidate_selector.select(
             draft_hidden,
             self._logits(draft_hidden),
