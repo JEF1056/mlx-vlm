@@ -1305,7 +1305,7 @@ class Qwen3_5Attention(nn.Module):
             )
 
         left_padded_decode = (
-            mask == left_padded_decode if isinstance(mask, str) else False
+            mask == 'left_padded_decode' if isinstance(mask, str) else False
         )
         if left_padded_decode:
             mask = None
