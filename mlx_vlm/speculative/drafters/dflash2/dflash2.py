@@ -1,4 +1,5 @@
 from collections.abc import Callable, Mapping
+from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -8,6 +9,7 @@ from ..qwen3_dflash.dflash import DFlashDecoderLayer, DFlashDraftModel
 from .config import DFlash2Config
 
 
+@partial(mx.compile, shapeless=True)
 def _grouped_dynamic_convolve(
     hidden: mx.array,
     dynamic: mx.array,
