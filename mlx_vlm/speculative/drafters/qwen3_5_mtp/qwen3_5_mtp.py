@@ -69,7 +69,7 @@ class Qwen3_5MTPDraftModel(nn.Module):
             getattr(config, "draft_sink_tokens", 4)
         )
         self.confidence_threshold: Optional[float] = getattr(
-            config, "confidence_threshold", 0.40
+            config, "confidence_threshold", None
         )
 
     def bind(self, target_model) -> "Qwen3_5MTPDraftModel":

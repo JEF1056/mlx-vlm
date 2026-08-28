@@ -369,12 +369,12 @@ class LagunaDFlashDraftModel(nn.Module):
         logits = self._logits(self._hidden(block, hidden, cache)[:, 1:])
         tokens = sampler(logits)
         if (
-            getattr(self, "confidence_threshold", 0.40) is not None
+            getattr(self, "confidence_threshold", None) is not None
             and tokens.shape[1] > 1
         ):
             probs = mx.softmax(logits[:, 0, :], axis=-1)
             conf = mx.max(probs, axis=-1)
-            if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+            if conf.min().item() < self.confidence_threshold:
                 tokens = tokens[:, :1]
         return tokens
 

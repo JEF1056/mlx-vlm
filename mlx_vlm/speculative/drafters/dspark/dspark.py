@@ -150,12 +150,12 @@ class DSparkDraftModel(DFlashDraftModel):
             sampler=sampler,
         ).astype(token_dtype)
         if (
-            getattr(self, "confidence_threshold", 0.40) is not None
+            getattr(self, "confidence_threshold", None) is not None
             and tokens.shape[1] > 1
         ):
             probs = mx.softmax(base_logits[:, 0, :], axis=-1)
             conf = mx.max(probs, axis=-1)
-            if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+            if conf.min().item() < self.confidence_threshold:
                 tokens = tokens[:, :1]
         return tokens
 

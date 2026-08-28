@@ -213,7 +213,7 @@ class Eagle3DraftModel(nn.Module):
             getattr(config, "draft_sink_tokens", 4)
         )
         self.confidence_threshold: Optional[float] = getattr(
-            config, "confidence_threshold", 0.40
+            config, "confidence_threshold", None
         )
 
         self.accept_lens: List[int] = []

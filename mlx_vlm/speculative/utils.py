@@ -141,6 +141,7 @@ def run_speculative_server_rounds(
     token_dtype: mx.Dtype = mx.int32,
     stop_check: Optional[Callable[[int, int], bool]] = None,
     greedy_sampling: bool = False,
+    shared_kv_states: Optional[dict] = None,
     eos_token_ids: Optional[set] = None,
     prompt_tokens: Optional[mx.array] = None,
     row_ids: Optional[List[int]] = None,

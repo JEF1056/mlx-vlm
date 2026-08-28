@@ -296,10 +296,10 @@ class InklingMTPDraftModel(nn.Module):
             tokens.append(tok)
 
             # Confidence-Based Early Drafting Exit (EAGLE-2): inspect token 1's confidence
-            if len(tokens) == 1 and getattr(self, "confidence_threshold", 0.40) is not None:
+            if len(tokens) == 1 and getattr(self, "confidence_threshold", None) is not None:
                 probs = mx.softmax(logits, axis=-1)
                 conf = mx.max(probs, axis=-1)
-                if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+                if conf.min().item() < self.confidence_threshold:
                     break
 
         self._draft_round += 1
