@@ -88,7 +88,7 @@ class TestLongContextSpeculativeMitigations(unittest.TestCase):
             num_key_value_heads=2,
             head_dim=16,
         )
-        cfg = Eagle3Config(text_config=text_cfg)
+        cfg = Eagle3Config(transformer_layer_config=text_cfg)
         cfg.draft_window_size = 32
         cfg.draft_sink_tokens = 4
         cfg.confidence_threshold = 0.40
@@ -127,7 +127,7 @@ class TestLongContextSpeculativeMitigations(unittest.TestCase):
             num_key_value_heads=2,
             head_dim=16,
         )
-        cfg = Eagle3Config(text_config=text_cfg)
+        cfg = Eagle3Config(transformer_layer_config=text_cfg)
         cfg.confidence_threshold = 0.40
 
         drafter = Eagle3DraftModel(cfg)
@@ -195,9 +195,10 @@ class TestLongContextSpeculativeMitigations(unittest.TestCase):
         sampler = lambda x: mx.argmax(x, axis=-1)
 
         # Uniform logits -> prob = 0.01 < 0.40 -> halts after 1 token
-        with patch.object(drafter, "__call__", return_value=(hidden, mx.zeros((1, 1, 100)))):
-            draft_tokens = drafter.draft_block(1, hidden, None, block_size=4, sampler=sampler)
-            self.assertEqual(draft_tokens.shape[1], 1)
+        with patch.object(drafter, "_forward_hidden", return_value=(hidden, hidden)):
+            with patch.object(drafter, "_lm_head_fn", return_value=mx.zeros((1, 1, 100))):
+                draft_tokens = drafter.draft_block(1, hidden, None, block_size=4, sampler=sampler)
+                self.assertEqual(draft_tokens.shape[1], 1)
 
     def test_dflash2_confidence_exit(self):
         cfg = SimpleNamespace(
