@@ -123,6 +123,7 @@ class DFlashDecoderLayer(nn.Module):
 
 class DFlashDraftModel(nn.Module):
     layer_class = DFlashDecoderLayer
+    prefer_requested_block_size = True
 
     def __init__(self, config: DFlashConfig):
         super().__init__()

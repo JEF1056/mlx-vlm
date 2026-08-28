@@ -3500,13 +3500,12 @@ def _validate_bits(bits) -> float:
     bits_str = str(bits)
     if '.' in bits_str:
         parts = bits_str.split('.')
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit() and parts[1] != '0' and parts[1] != '5':
             key_b = int(parts[0])
             val_b = int(parts[1])
             if key_b < 1 or val_b < 1:
                 raise ValueError(f"TurboQuant requires kv_bits >= 1, got {bits}.")
-            if val_b != 0:
-                return float(f"{key_b}.{val_b}")
+            return float(f"{key_b}.{val_b}")
 
     bits = float(bits)
     if bits < 1:

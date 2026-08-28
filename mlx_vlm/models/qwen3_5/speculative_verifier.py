@@ -1200,10 +1200,10 @@ class Qwen3_5ExactSpeculativeVerifier:
         return language
 
     def _linear(self, linear, x: mx.array) -> mx.array:
-        return _target_verify_linear(linear, x)
+        return linear(x)
 
     def _linears(self, linears, x: mx.array):
-        return _target_verify_linears(linears, x)
+        return tuple(linear(x) for linear in linears)
 
     def _embedding_as_linear(self, embedding, x: mx.array) -> mx.array:
         return _target_verify_embedding_as_linear(embedding, x)

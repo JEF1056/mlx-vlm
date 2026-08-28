@@ -1248,8 +1248,8 @@ class Qwen3_5Attention(nn.Module):
         if mask is not None and isinstance(mask, mx.array):
             if (
                 cache is not None
-                and hasattr(cache, _idx)
-                and hasattr(cache, left_padding)
+                and hasattr(cache, '_idx')
+                and hasattr(cache, 'left_padding')
             ):
                 kv_seq_len = int(cache._idx) + L
             elif isinstance(kv_seq_len, mx.array):

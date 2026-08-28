@@ -133,7 +133,7 @@ class CandidateSelector(nn.Module):
 
 class DFlash2DraftModel(DFlashDraftModel):
     layer_class = DFlash2DecoderLayer
-    prefer_requested_block_size = False
+    prefer_requested_block_size = True
     dflash_initial_block_size = 3
     dflash_min_block_size = 3
 
