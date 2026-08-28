@@ -29,8 +29,8 @@ from mlx_vlm.speculative.drafters.qwen3_5_mtp.config import (
 )
 from mlx_vlm.speculative.drafters.qwen3_5_mtp.qwen3_5_mtp import (
     Qwen3_5MTPDraftModel,
-    _mtp_next_block_size,
 )
+from mlx_vlm.speculative.mtp import _mtp_next_block_size
 
 
 class TestLongContextSpeculativeMitigations(unittest.TestCase):
