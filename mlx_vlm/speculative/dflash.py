@@ -5,6 +5,7 @@ import mlx.nn as nn
 
 from .common import (
     _dflash_block_total,
+    _get_ema_scaled_block_size,
     _record_speculative_round,
     _speculative_walk,
     _speculative_walk_batch,
@@ -28,9 +29,9 @@ def _dflash_next_block_size(
     """
     block_total = min(requested_block_total, remaining_budget)
     if block_total <= 1:
-        return block_total
+        return _get_ema_scaled_block_size(draft_model, block_total)
     if getattr(draft_model, "prefer_requested_block_size", False):
-        return block_total
+        return _get_ema_scaled_block_size(draft_model, block_total)
 
     accept_lens = getattr(draft_model, "accept_lens", None) or []
     draft_lens = getattr(draft_model, "draft_lens", None) or []
@@ -41,8 +42,10 @@ def _dflash_next_block_size(
     ]
     if not recent:
         if initial_block_size is not None:
-            return min(block_total, max(2, int(initial_block_size)))
-        return block_total
+            chosen = min(block_total, max(2, int(initial_block_size)))
+        else:
+            chosen = block_total
+        return _get_ema_scaled_block_size(draft_model, chosen)
 
     current = min(block_total, max(2, recent[-1][1] + 1))
     min_total = min(
@@ -56,18 +59,20 @@ def _dflash_next_block_size(
 
     if accept_rate < 0.30 or mean_accept < 2.0:
         if current >= 8:
-            return max(min_total, min(block_total, current // 2))
-        return max(min_total, min(block_total, current - 2))
+            chosen = max(min_total, min(block_total, current // 2))
+        else:
+            chosen = max(min_total, min(block_total, current - 2))
+    elif accept_rate < 0.50:
+        chosen = max(min_total, min(block_total, current - 2))
+    else:
+        full_hits = sum(1 for a, d in recent if a >= d)
+        full_hit_rate = full_hits / len(recent)
+        if accept_rate >= 0.85 and full_hit_rate >= 0.75:
+            chosen = min(block_total, current + 2)
+        else:
+            chosen = min(block_total, current)
 
-    if accept_rate < 0.50:
-        return max(min_total, min(block_total, current - 2))
-
-    full_hits = sum(1 for a, d in recent if a >= d)
-    full_hit_rate = full_hits / len(recent)
-    if accept_rate >= 0.85 and full_hit_rate >= 0.75:
-        return min(block_total, current + 2)
-
-    return min(block_total, current)
+    return _get_ema_scaled_block_size(draft_model, chosen)
 
 
 def _dflash_committed_hidden_segments(

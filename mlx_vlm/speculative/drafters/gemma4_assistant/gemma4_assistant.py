@@ -58,6 +58,15 @@ class Gemma4AssistantDraftModel(nn.Module):
 
         self.accept_lens: List[int] = []
         self.draft_lens: List[int] = []
+        self.draft_window_size: Optional[int] = getattr(
+            config, "draft_window_size", 2048
+        )
+        self.draft_sink_tokens: int = int(
+            getattr(config, "draft_sink_tokens", 4)
+        )
+        self.confidence_threshold: Optional[float] = getattr(
+            config, "confidence_threshold", 0.40
+        )
 
         if config.use_ordered_embeddings:
             self.masked_embedding = MaskedEmbedder(config)
@@ -141,6 +150,29 @@ class Gemma4AssistantDraftModel(nn.Module):
                 kv_valid_len=kv_valid_len,
                 left_padding=left_padding,
             )
+
+        # Sliding-Window / Sparse Draft Attention: only attend to sink + local window
+        if self.draft_window_size is not None and shared_kv_states:
+            sparse_kv = {}
+            sink = self.draft_sink_tokens
+            win = self.draft_window_size - sink
+            for k, val in shared_kv_states.items():
+                if isinstance(val, (tuple, list)) and len(val) >= 2:
+                    keys, values = val[:2]
+                    if keys is not None and keys.shape[2] > self.draft_window_size:
+                        k_sparse = mx.concatenate(
+                            [keys[..., :sink, :], keys[..., -win:, :]], axis=2
+                        )
+                        v_sparse = mx.concatenate(
+                            [values[..., :sink, :], values[..., -win:, :]], axis=2
+                        )
+                        sparse_kv[k] = (k_sparse, v_sparse)
+                    else:
+                        sparse_kv[k] = val
+                else:
+                    sparse_kv[k] = val
+            shared_kv_states = sparse_kv
+
         self._shared_kv = shared_kv_states
         if isinstance(position, int):
             self._position = position
@@ -265,9 +297,14 @@ class Gemma4AssistantDraftModel(nn.Module):
         h_prev = hidden
         tokens: List[mx.array] = []
 
-        for _ in range(block_size - 1):
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
+        for step in range(block_size - 1):
             tok_embed = self._input_embed(tok) * self._input_embed_scale
             inputs_embeds = mx.concatenate([tok_embed, h_prev], axis=-1)
+            logits = None
             if greedy and self.masked_embedding is not None:
                 h_prev, hidden = self._forward_hidden(
                     inputs_embeds, shared_kv, position_ids
@@ -279,6 +316,17 @@ class Gemma4AssistantDraftModel(nn.Module):
                 h_prev, logits = self(inputs_embeds, shared_kv, position_ids)
                 tok = sampler(logits)
             tokens.append(tok)
+
+            # Confidence-Based Early Drafting Exit (EAGLE-2): inspect token 1's confidence
+            if (
+                step == 0
+                and self.confidence_threshold is not None
+                and logits is not None
+            ):
+                probs = mx.softmax(logits, axis=-1)
+                conf = mx.max(probs, axis=-1)
+                if conf.min().item() < self.confidence_threshold:
+                    break
 
         return mx.concatenate(tokens, axis=1)
 

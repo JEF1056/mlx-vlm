@@ -310,6 +310,10 @@ class MuseGlimmerAssistantDraftModel(nn.Module):
         token_dtype: mx.Dtype = mx.int32,
         target_hidden_prepared: bool = False,
     ) -> mx.array:
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         mask_id = self.config.mask_token_id
         if isinstance(last_bonus, int):
             block = mx.array(
@@ -322,16 +326,24 @@ class MuseGlimmerAssistantDraftModel(nn.Module):
             block = mx.concatenate(
                 [last_bonus[:, None].astype(token_dtype), masks], axis=1
             )
-        return sampler(
-            self._logits(
-                self._hidden(
-                    block,
-                    hidden,
-                    cache,
-                    target_hidden_prepared=target_hidden_prepared,
-                )[:, 1:]
-            )
+        logits = self._logits(
+            self._hidden(
+                block,
+                hidden,
+                cache,
+                target_hidden_prepared=target_hidden_prepared,
+            )[:, 1:]
         )
+        tokens = sampler(logits)
+        if (
+            getattr(self, "confidence_threshold", 0.40) is not None
+            and tokens.shape[1] > 1
+        ):
+            probs = mx.softmax(logits[:, 0, :], axis=-1)
+            conf = mx.max(probs, axis=-1)
+            if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+                tokens = tokens[:, :1]
+        return tokens
 
     def sanitize(self, weights: Mapping[str, mx.array]) -> dict[str, mx.array]:
         normalized = {

@@ -410,6 +410,10 @@ class DeepseekV4MTPDraftModel(nn.Module):
         greedy: bool = False,
     ) -> mx.array:
         del cache
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         if self._input_embed is None or self._lm_head_fn is None:
             raise RuntimeError(
                 "bind(target_model) must be called before draft_block() "
@@ -438,6 +442,13 @@ class DeepseekV4MTPDraftModel(nn.Module):
             logits = self._lm_head_fn(logits_hidden)
             tok = mx.argmax(logits, axis=-1) if greedy else sampler(logits)
             tokens.append(tok)
+
+            # Confidence-Based Early Drafting Exit (EAGLE-2): inspect token 1's confidence
+            if len(tokens) == 1 and getattr(self, "confidence_threshold", 0.40) is not None:
+                probs = mx.softmax(logits, axis=-1)
+                conf = mx.max(probs, axis=-1)
+                if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+                    break
 
         self._draft_round += 1
         return mx.concatenate(tokens, axis=1)

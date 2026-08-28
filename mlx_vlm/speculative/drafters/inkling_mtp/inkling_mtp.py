@@ -283,6 +283,10 @@ class InklingMTPDraftModel(nn.Module):
             self._seed_token = None
             self._seed_hidden = None
 
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         while len(tokens) < block_size - 1:
             h_prev = self._forward_token(tok, h_prev, token_dtype)
             logits = self._block_logits(h_prev)
@@ -290,6 +294,13 @@ class InklingMTPDraftModel(nn.Module):
             if tok.ndim == 1:
                 tok = tok[:, None]
             tokens.append(tok)
+
+            # Confidence-Based Early Drafting Exit (EAGLE-2): inspect token 1's confidence
+            if len(tokens) == 1 and getattr(self, "confidence_threshold", 0.40) is not None:
+                probs = mx.softmax(logits, axis=-1)
+                conf = mx.max(probs, axis=-1)
+                if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+                    break
 
         self._draft_round += 1
         return mx.concatenate(tokens, axis=1)

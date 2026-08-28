@@ -8,6 +8,7 @@ from ..models import cache
 from .common import (
     _batch_cache_left_padding,
     _dflash_block_total,
+    _get_ema_scaled_block_size,
     _record_speculative_round,
     _speculative_walk,
     _speculative_walk_batch,
@@ -484,13 +485,15 @@ def _mtp_next_block_size(
     remaining_budget: int,
 ) -> int:
     if getattr(draft_model, "prefer_requested_block_size", False):
-        return min(requested_block_total, remaining_budget)
-    return _effective_mtp_block_size(
-        requested_block_total,
-        configured_block_total,
-        draft_model.accept_lens,
-        remaining_budget,
-    )
+        chosen = min(requested_block_total, remaining_budget)
+    else:
+        chosen = _effective_mtp_block_size(
+            requested_block_total,
+            configured_block_total,
+            draft_model.accept_lens,
+            remaining_budget,
+        )
+    return _get_ema_scaled_block_size(draft_model, chosen)
 
 
 def _buffer_mtp_target_cache(

@@ -46,7 +46,17 @@ class DFlashAttention(nn.Module):
     def __call__(self, x: mx.array, x_ctx: mx.array, rope, cache: KVCache):
         B, L, _ = x.shape
         S = x_ctx.shape[1]
-        if self.is_sliding:
+        window = getattr(self.config, "draft_window_size", 2048)
+        sink = getattr(self.config, "draft_sink_tokens", 4)
+        if window is not None and S > window:
+            skip = S - window
+            x_ctx = mx.concatenate(
+                [x_ctx[:, :sink, :], x_ctx[:, -(window - sink) :, :]], axis=1
+            )
+            S = x_ctx.shape[1]
+            if cache is not None:
+                cache.offset += skip
+        elif self.is_sliding:
             if self.sliding_window is None:
                 raise ValueError(
                     "DFlash draft config must define sliding_window for sliding layers."
@@ -213,6 +223,10 @@ class DFlashDraftModel(nn.Module):
         token_dtype: mx.Dtype = mx.int32,
         target_hidden_prepared: bool = False,
     ) -> mx.array:
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         mask_id = int(self.config.mask_token_id)
         if isinstance(last_bonus, int):
             block = mx.array(
@@ -232,7 +246,16 @@ class DFlashDraftModel(nn.Module):
             target_hidden_prepared=target_hidden_prepared,
         )
         draft_logits = self._logits(draft_hidden[:, 1:])
-        return sampler(draft_logits)
+        tokens = sampler(draft_logits)
+        if (
+            getattr(self, "confidence_threshold", 0.40) is not None
+            and tokens.shape[1] > 1
+        ):
+            probs = mx.softmax(draft_logits[:, 0, :], axis=-1)
+            conf = mx.max(probs, axis=-1)
+            if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+                tokens = tokens[:, :1]
+        return tokens
 
     def _hidden(
         self,

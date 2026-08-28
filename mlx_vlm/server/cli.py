@@ -240,6 +240,36 @@ def main():
         help="Override the drafter's configured block size.",
     )
     parser.add_argument(
+        "--max-speculative-context-len",
+        type=int,
+        default=16384,
+        help="Context length threshold (default: 16384) above which speculative drafting is bypassed.",
+    )
+    parser.add_argument(
+        "--draft-window-size",
+        type=int,
+        default=2048,
+        help="Sliding window size (default: 2048) for sparse draft attention.",
+    )
+    parser.add_argument(
+        "--draft-sink-tokens",
+        type=int,
+        default=4,
+        help="Number of initial sink tokens (default: 4) retained in sliding-window draft attention.",
+    )
+    parser.add_argument(
+        "--draft-confidence-threshold",
+        type=float,
+        default=0.40,
+        help="Confidence threshold (default: 0.40) for early drafting exit on token 1.",
+    )
+    parser.add_argument(
+        "--draft-ema-threshold",
+        type=float,
+        default=0.35,
+        help="EMA acceptance rate threshold (default: 0.35) below which draft block size dynamically scales down.",
+    )
+    parser.add_argument(
         "--max-num-seqs",
         type=int,
         default=None,

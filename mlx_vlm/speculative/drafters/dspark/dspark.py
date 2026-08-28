@@ -144,11 +144,20 @@ class DSparkDraftModel(DFlashDraftModel):
         draft_inputs = mx.concatenate([anchor[:, None], masks], axis=1)
         draft_hidden = self._hidden(draft_inputs, hidden, cache)
         base_logits = self._logits(draft_hidden)
-        return self.markov_head.sample_block(
+        tokens = self.markov_head.sample_block(
             base_logits,
             first_prev_tokens=anchor,
             sampler=sampler,
         ).astype(token_dtype)
+        if (
+            getattr(self, "confidence_threshold", 0.40) is not None
+            and tokens.shape[1] > 1
+        ):
+            probs = mx.softmax(base_logits[:, 0, :], axis=-1)
+            conf = mx.max(probs, axis=-1)
+            if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+                tokens = tokens[:, :1]
+        return tokens
 
     def sanitize(self, weights: Mapping[str, mx.array]) -> dict[str, mx.array]:
         normalized = {}

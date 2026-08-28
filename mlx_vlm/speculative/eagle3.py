@@ -5,6 +5,7 @@ import mlx.nn as nn
 
 from .common import (
     _batch_cache_left_padding,
+    _get_ema_scaled_block_size,
     _record_speculative_round,
     _SpeculativeSamplerRNG,
     generation_stream,
@@ -127,7 +128,8 @@ def _eagle3_next_block_size(
     adaptive: bool,
 ) -> int:
     if not adaptive:
-        return min(max_block_total, remaining_budget)
+        chosen = min(max_block_total, remaining_budget)
+        return _get_ema_scaled_block_size(draft_model, chosen)
 
     tiers = _eagle3_block_tiers(configured_block_total, max_block_total)
     current = getattr(draft_model, "_adaptive_block_size", None)
@@ -155,7 +157,7 @@ def _eagle3_next_block_size(
 
     current = min(current, max_block_total, remaining_budget)
     draft_model._adaptive_block_size = current
-    return current
+    return _get_ema_scaled_block_size(draft_model, current)
 
 
 def _eagle3_verify_target(

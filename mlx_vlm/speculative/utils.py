@@ -141,10 +141,10 @@ def run_speculative_server_rounds(
     token_dtype: mx.Dtype = mx.int32,
     stop_check: Optional[Callable[[int, int], bool]] = None,
     greedy_sampling: bool = False,
-    shared_kv_states: Optional[dict] = None,
     eos_token_ids: Optional[set] = None,
     prompt_tokens: Optional[mx.array] = None,
     row_ids: Optional[List[int]] = None,
+    max_speculative_context_len: Optional[int] = None,
 ) -> Generator[Tuple[List[Optional[int]], None], None, None]:
     batch_size = int(first_bonus.shape[0]) if first_bonus.ndim > 0 else 1
     _validate_speculative_sampling(draft_model, greedy_sampling)
@@ -259,6 +259,7 @@ def run_speculative_rounds(
     sampler: Callable[[mx.array], mx.array],
     draft_block_size: Optional[int] = None,
     sampler_is_greedy: bool = False,
+    max_speculative_context_len: Optional[int] = None,
 ) -> Generator[Tuple[Any, mx.array], None, None]:
     B = input_ids.shape[0]
     _validate_speculative_sampling(draft_model, sampler_is_greedy)

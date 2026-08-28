@@ -215,12 +215,22 @@ class DFlash2DraftModel(DFlashDraftModel):
             cache,
             target_hidden_prepared=target_hidden_prepared,
         )[:, 1:]
-        return self.candidate_selector.select(
+        logits = self._logits(draft_hidden)
+        tokens = self.candidate_selector.select(
             draft_hidden,
-            self._logits(draft_hidden),
+            logits,
             anchor,
             sampler,
         ).astype(token_dtype)
+        if (
+            getattr(self, "confidence_threshold", 0.40) is not None
+            and tokens.shape[1] > 1
+        ):
+            probs = mx.softmax(logits[:, 0, :], axis=-1)
+            conf = mx.max(probs, axis=-1)
+            if conf.min().item() < getattr(self, "confidence_threshold", 0.40):
+                tokens = tokens[:, :1]
+        return tokens
 
     def sanitize(self, weights: Mapping[str, mx.array]) -> dict[str, mx.array]:
         normalized = {}

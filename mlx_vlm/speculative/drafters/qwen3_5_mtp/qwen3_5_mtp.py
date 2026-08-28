@@ -6,7 +6,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from ....models.base import create_attention_mask
-from ....models.cache import BatchKVCache, KVCache
+from ....models.cache import BatchKVCache, KVCache, RotatingKVCache
 from ....models.qwen3_5.fp8 import convert_qwen_fp8_weights
 from ....models.qwen3_5.language import Qwen3_5DecoderLayer
 from ....models.qwen3_5_moe.language import Qwen3_5MoeDecoderLayer
@@ -62,6 +62,15 @@ class Qwen3_5MTPDraftModel(nn.Module):
 
         self.accept_lens: List[int] = []
         self.draft_lens: List[int] = []
+        self.draft_window_size: Optional[int] = getattr(
+            config, "draft_window_size", 2048
+        )
+        self.draft_sink_tokens: int = int(
+            getattr(config, "draft_sink_tokens", 4)
+        )
+        self.confidence_threshold: Optional[float] = getattr(
+            config, "confidence_threshold", 0.40
+        )
 
     def bind(self, target_model) -> "Qwen3_5MTPDraftModel":
         inner = None
@@ -93,14 +102,21 @@ class Qwen3_5MTPDraftModel(nn.Module):
         )
         return self
 
-    def make_cache(self, left_padding: Optional[List[int]] = None) -> List[KVCache]:
+    def make_cache(self, left_padding: Optional[List[int]] = None) -> List[Any]:
         if left_padding is not None:
             return [BatchKVCache(left_padding) for _ in self.layers]
+        if self.draft_window_size is not None:
+            return [
+                RotatingKVCache(
+                    max_size=self.draft_window_size, keep=self.draft_sink_tokens
+                )
+                for _ in self.layers
+            ]
         return [KVCache() for _ in self.layers]
 
     def reset(
         self, target_model, left_padding: Optional[List[int]] = None
-    ) -> List[KVCache]:
+    ) -> List[Any]:
         self.bind(target_model)
         self.accept_lens = []
         self.draft_lens = []
@@ -436,6 +452,10 @@ class Qwen3_5MTPDraftModel(nn.Module):
         greedy: bool = False,
     ) -> mx.array:
         del cache
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         if self._input_embed is None or self._lm_head_fn is None:
             raise RuntimeError(
                 "bind(target_model) must be called before draft_block() "
@@ -464,6 +484,13 @@ class Qwen3_5MTPDraftModel(nn.Module):
             logits = self._lm_head_fn(h_prev)
             tok = mx.argmax(logits, axis=-1) if greedy else sampler(logits)
             tokens.append(tok)
+
+            # Confidence-Based Early Drafting Exit (EAGLE-2): inspect token 1's confidence
+            if len(tokens) == 1 and self.confidence_threshold is not None:
+                probs = mx.softmax(logits, axis=-1)
+                conf = mx.max(probs, axis=-1)
+                if conf.min().item() < self.confidence_threshold:
+                    break
 
         self._draft_round += 1
         return mx.concatenate(tokens, axis=1)

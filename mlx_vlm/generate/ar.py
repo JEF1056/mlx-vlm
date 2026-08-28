@@ -218,6 +218,7 @@ def generate_step(
     draft_model: Optional[nn.Module] = None,
     draft_kind: str = "dflash",
     draft_block_size: Optional[int] = None,
+    max_speculative_context_len: Optional[int] = 16384,
     prompt_cache_checkpoint: Optional[Callable[[int, List[Any]], None]] = None,
     prompt_cache_checkpoint_len: Optional[int] = None,
     seed: Optional[int] = None,
@@ -521,7 +522,18 @@ def generate_step(
 
     mx.async_eval(y, logprobs)
 
-    # Speculative decoding
+    # Speculative decoding (bypass if context exceeds max_speculative_context_len)
+    prompt_len = (
+        prompt_cache[0].offset
+        if prompt_cache and len(prompt_cache) > 0 and hasattr(prompt_cache[0], "offset")
+        else (int(inputs_embeds.shape[1]) if inputs_embeds is not None else int(input_ids.shape[1]))
+    )
+    if (
+        max_speculative_context_len is not None
+        and prompt_len > max_speculative_context_len
+    ):
+        draft_model = None
+
     if draft_model is not None:
         yield from run_speculative_rounds(
             model,
@@ -536,6 +548,7 @@ def generate_step(
             sampler=sampler,
             draft_block_size=draft_block_size,
             sampler_is_greedy=sampler_is_greedy,
+            max_speculative_context_len=max_speculative_context_len,
         )
         return
 

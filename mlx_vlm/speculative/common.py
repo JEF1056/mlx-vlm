@@ -209,12 +209,67 @@ def _speculative_walk_batch_uniform_acceptance(
     return [accepted] * len(accepted_list), new_tokens_list
 
 
+def _update_speculative_ema(
+    draft_model: nn.Module,
+    accepted: float,
+    draft_count: int,
+    window: int = 10,
+) -> float:
+    """Update and return the Exponential Moving Average (EMA) acceptance rate.
+
+    Tracks alpha_EMA over the specified window (default: 10 rounds).
+    If draft_count == 0, maintains the previous EMA rate.
+    """
+    if draft_count <= 0:
+        return getattr(draft_model, "_ema_accept_rate", 1.0)
+
+    round_rate = float(accepted) / float(draft_count)
+    beta = 2.0 / (float(window) + 1.0)
+
+    prev_ema = getattr(draft_model, "_ema_accept_rate", None)
+    if prev_ema is None:
+        ema = round_rate
+    else:
+        ema = (1.0 - beta) * prev_ema + beta * round_rate
+
+    draft_model._ema_accept_rate = ema
+    return ema
+
+
+def _get_ema_scaled_block_size(
+    draft_model: nn.Module,
+    base_block_size: int,
+    threshold: float = 0.35,
+) -> int:
+    """Scale draft block size down when EMA acceptance rate drops below threshold.
+
+    Dynamically scales: 3 -> 2 -> 1 -> 0 (eliminating drafter passes).
+    Recovers gradually when EMA acceptance rate is above threshold.
+    """
+    ema = getattr(draft_model, "_ema_accept_rate", None)
+    if ema is None:
+        return base_block_size
+
+    scale_down = getattr(draft_model, "_ema_scale_down", 0)
+
+    if ema < threshold:
+        # Scale block size down
+        scale_down = min(base_block_size, scale_down + 1)
+    else:
+        # Recover block size
+        scale_down = max(0, scale_down - 1)
+
+    draft_model._ema_scale_down = scale_down
+    return max(0, base_block_size - scale_down)
+
+
 def _record_speculative_round(
     draft_model: nn.Module, accepted: float, draft_count: int
 ) -> None:
     draft_model.accept_lens.append(accepted)
     if hasattr(draft_model, "draft_lens"):
         draft_model.draft_lens.append(int(draft_count))
+    _update_speculative_ema(draft_model, accepted, draft_count)
     # Monotonic lifetime counters for per-request attribution. Unlike the
     # ``accept_lens`` history, these survive ``reset()`` between requests,
     # so callers can snapshot-and-diff across a request's lifetime.

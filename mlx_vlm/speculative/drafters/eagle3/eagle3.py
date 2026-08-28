@@ -4,7 +4,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from ....models.base import create_attention_mask, scaled_dot_product_attention
-from ....models.cache import BatchKVCache, KVCache
+from ....models.cache import BatchKVCache, KVCache, RotatingKVCache
 from .config import Eagle3Config, TextConfig
 
 
@@ -200,10 +200,21 @@ class Eagle3DraftModel(nn.Module):
         self._cache: List[KVCache] = []
         self._seed_token: Optional[mx.array] = None
         self._seed_hidden: Optional[mx.array] = None
+        self._seed_confidence: Optional[float] = None
         self._next_position: Any = 1
         self._left_padding: Optional[mx.array] = None
         self._round_appended = 0
         self._adaptive_block_size: Optional[int] = None
+
+        self.draft_window_size: Optional[int] = getattr(
+            config, "draft_window_size", 2048
+        )
+        self.draft_sink_tokens: int = int(
+            getattr(config, "draft_sink_tokens", 4)
+        )
+        self.confidence_threshold: Optional[float] = getattr(
+            config, "confidence_threshold", 0.40
+        )
 
         self.accept_lens: List[int] = []
         self.draft_lens: List[int] = []
@@ -232,14 +243,21 @@ class Eagle3DraftModel(nn.Module):
                 self.embed_tokens = target_embed
         return self
 
-    def make_cache(self, left_padding: Optional[List[int]] = None) -> List[KVCache]:
+    def make_cache(self, left_padding: Optional[List[int]] = None) -> List[Any]:
         if left_padding is not None:
             return [BatchKVCache(left_padding) for _ in self.layers]
+        if self.draft_window_size is not None:
+            return [
+                RotatingKVCache(
+                    max_size=self.draft_window_size, keep=self.draft_sink_tokens
+                )
+                for _ in self.layers
+            ]
         return [KVCache() for _ in self.layers]
 
     def reset(
         self, target_model, left_padding: Optional[List[int]] = None
-    ) -> List[KVCache]:
+    ) -> List[Any]:
         self.bind(target_model)
         self.accept_lens = []
         self.draft_lens = []
@@ -252,6 +270,7 @@ class Eagle3DraftModel(nn.Module):
         self._cache = self.make_cache(shifted_left_padding)
         self._seed_token = None
         self._seed_hidden = None
+        self._seed_confidence = None
         self._next_position = 1
         self._round_appended = 0
         self._adaptive_block_size = None
@@ -312,6 +331,9 @@ class Eagle3DraftModel(nn.Module):
 
     def _set_seed_from_hidden(self, hidden: mx.array, sampler, token_dtype, greedy):
         logits = self._logits(hidden)
+        probs = mx.softmax(logits, axis=-1)
+        conf = mx.max(probs, axis=-1)
+        self._seed_confidence = float(conf.min().item())
         self._seed_token = self._sample(logits, sampler, token_dtype, greedy)
         self._seed_hidden = hidden
 
@@ -332,13 +354,28 @@ class Eagle3DraftModel(nn.Module):
             bonus = bonus_token[:, None].astype(token_dtype)
 
         shifted = mx.concatenate([input_ids[:, 1:].astype(token_dtype), bonus], axis=1)
+        hidden_slice = hidden[:, : shifted.shape[1], :]
+
+        # Sparse / Sliding-Window attention: slice long sequences to sink + window tokens
+        if (
+            self.draft_window_size is not None
+            and shifted.shape[1] > self.draft_window_size
+            and self._left_padding is None
+        ):
+            sink = self.draft_sink_tokens
+            win = self.draft_window_size - sink
+            shifted = mx.concatenate([shifted[:, :sink], shifted[:, -win:]], axis=1)
+            hidden_slice = mx.concatenate(
+                [hidden_slice[:, :sink, :], hidden_slice[:, -win:, :]], axis=1
+            )
+
         if self._left_padding is not None:
             self._next_position = 1 - self._left_padding
         else:
             self._next_position = 1
         h = self._forward_tokens(
             shifted,
-            hidden[:, : shifted.shape[1], :],
+            hidden_slice,
             token_dtype,
         )
         self._set_seed_from_hidden(h[:, -1:, :], sampler, token_dtype, greedy)
@@ -354,6 +391,10 @@ class Eagle3DraftModel(nn.Module):
         greedy: bool = False,
     ) -> mx.array:
         del cache
+        if block_size <= 1:
+            batch = 1 if isinstance(last_bonus, int) else int(last_bonus.shape[0])
+            return mx.zeros((batch, 0), dtype=token_dtype)
+
         if isinstance(last_bonus, int):
             tok = mx.array([[last_bonus]], dtype=token_dtype)
         else:
@@ -367,14 +408,31 @@ class Eagle3DraftModel(nn.Module):
             tok = self._seed_token.astype(token_dtype)
             h_prev = self._seed_hidden
             tokens.append(tok)
+            seed_conf = getattr(self, "_seed_confidence", None)
             self._seed_token = None
             self._seed_hidden = None
+            self._seed_confidence = None
+            # Confidence-based early drafting exit on seeded token 1
+            if (
+                self.confidence_threshold is not None
+                and seed_conf is not None
+                and seed_conf < self.confidence_threshold
+            ):
+                return mx.concatenate(tokens, axis=1)
 
         while len(tokens) < block_size - 1:
             h_prev = self._forward_tokens(tok, h_prev, token_dtype)
             self._round_appended += 1
-            tok = self._sample(self._logits(h_prev), sampler, token_dtype, greedy)
+            logits = self._logits(h_prev)
+            tok = self._sample(logits, sampler, token_dtype, greedy)
             tokens.append(tok)
+
+            # Confidence-Based Early Drafting Exit (EAGLE-2): inspect token 1's confidence
+            if len(tokens) == 1 and self.confidence_threshold is not None:
+                probs = mx.softmax(logits, axis=-1)
+                conf = mx.max(probs, axis=-1)
+                if conf.min().item() < self.confidence_threshold:
+                    break
 
         return mx.concatenate(tokens, axis=1)
 
