@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 from .. import apc as _apc
 from .._stream_cleanup import clear_mlx_streams
-from ..generate import (
+from ..generate import (  # noqa: F401 - compatibility re-exported by server.__init__
     DEFAULT_KV_GROUP_SIZE,
     DEFAULT_KV_QUANT_SCHEME,
     DEFAULT_MAX_TOKENS,
@@ -28,9 +28,7 @@ from ..generate import (
     DEFAULT_THINKING_START_TOKEN,
     DEFAULT_TOP_P,
     BatchGenerator,
-    _chunked_prefill_enabled,
     _make_cache,
-    _merge_prefill_prompt_kwargs,
 )
 from ..generate.diffusion import (
     is_diffusion_model,
@@ -42,14 +40,7 @@ from ..sample_utils import (
     make_sampler,
     top_p_sampling,
 )
-from ..speculative.utils import (
-    make_speculative_prompt_cache,
-    run_speculative_server_rounds,
-    speculative_hidden_state,
-    speculative_prefill_kwargs,
-    speculative_stats_since,
-    speculative_stats_snapshot,
-)
+from ..speculative.utils import speculative_stats_since, speculative_stats_snapshot
 from ..structured import ThinkingAwareLogitsProcessor
 from ..tokenizer_utils import _ServerTokenStreamer, make_streaming_detokenizer
 from ..utils import ThinkingBudgetCriteria, load, prepare_inputs
@@ -130,93 +121,6 @@ def get_log_progress_interval():
             DEFAULT_LOG_PROGRESS_INTERVAL,
         )
         return DEFAULT_LOG_PROGRESS_INTERVAL
-
-
-def _sequence_aligned_prefill_keys(
-    prompt_kwargs: dict, *, batch_size: int, sequence_length: int
-) -> List[str]:
-    return [
-        k
-        for k, v in (prompt_kwargs or {}).items()
-        if isinstance(v, mx.array)
-        and v.ndim >= 2
-        and v.shape[0] == batch_size
-        and v.shape[1] == sequence_length
-    ]
-
-
-def _slice_prefill_kwargs(prompt_kwargs: dict, keys: List[str], n: int) -> dict:
-    if not keys:
-        return prompt_kwargs
-    out = dict(prompt_kwargs)
-    for key in keys:
-        if key in out:
-            out[key] = out[key][:, :n, ...]
-    return out
-
-
-def _drop_prefill_kwargs(prompt_kwargs: dict, keys: List[str], n: int) -> dict:
-    if not keys:
-        return prompt_kwargs
-    out = dict(prompt_kwargs)
-    for key in keys:
-        if key in out:
-            out[key] = out[key][:, n:, ...]
-    return out
-
-
-def _run_chunked_speculative_prefill(
-    lm,
-    input_ids: mx.array,
-    inputs_embeds: mx.array,
-    prompt_cache,
-    prompt_kwargs: dict,
-    speculative_kwargs: dict,
-    *,
-    prefill_step_size: Optional[int],
-    generation_stream,
-) -> Tuple[object, mx.array]:
-    """Prefill target cache in chunks, capturing speculative state only at end."""
-    remaining_input_ids = input_ids
-    remaining_embeds = inputs_embeds
-    remaining_kwargs = dict(prompt_kwargs or {})
-    sequence_keys = _sequence_aligned_prefill_keys(
-        remaining_kwargs,
-        batch_size=input_ids.shape[0],
-        sequence_length=inputs_embeds.shape[1],
-    )
-
-    if (
-        prefill_step_size is not None
-        and prefill_step_size > 0
-        and remaining_embeds.shape[1] > prefill_step_size
-    ):
-        while remaining_embeds.shape[1] > 1:
-            n_to_process = min(prefill_step_size, remaining_embeds.shape[1] - 1)
-            chunk_kwargs = _slice_prefill_kwargs(
-                remaining_kwargs, sequence_keys, n_to_process
-            )
-            with mx.stream(generation_stream):
-                lm(
-                    remaining_input_ids[:, :n_to_process],
-                    cache=prompt_cache,
-                    inputs_embeds=remaining_embeds[:, :n_to_process],
-                    n_to_process=n_to_process,
-                    **chunk_kwargs,
-                )
-            mx.eval([c.state for c in prompt_cache])
-            remaining_input_ids = remaining_input_ids[:, n_to_process:]
-            remaining_embeds = remaining_embeds[:, n_to_process:]
-            remaining_kwargs = _drop_prefill_kwargs(
-                remaining_kwargs, sequence_keys, n_to_process
-            )
-            mx.clear_cache()
-
-    final_kwargs = {**remaining_kwargs, **speculative_kwargs}
-    final_kwargs["inputs_embeds"] = remaining_embeds
-    with mx.stream(generation_stream):
-        out = lm(remaining_input_ids, cache=prompt_cache, **final_kwargs)
-    return out, remaining_input_ids
 
 
 def _position_seed(seed: int, row_id: int, position: int) -> int:
@@ -307,21 +211,6 @@ class _PositionedTargetSampler:
         return mx.take_along_axis(sorted_indices, sampled_pos[..., None], axis=-1)[0]
 
 
-def _sample_last_token(
-    logits: mx.array,
-    sampler: Callable[[mx.array], mx.array],
-    *,
-    row_ids: Optional[List[int]] = None,
-    positions: Optional[List[int]] = None,
-):
-    logits = logits[:, -1, :]
-    logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-    sample_target = getattr(sampler, "sample_target", None)
-    if callable(sample_target) and row_ids is not None and positions is not None:
-        return sample_target(logprobs, row_ids=row_ids, positions=positions)
-    return sampler(logprobs)
-
-
 def get_server_enable_thinking():
     raw = os.environ.get("MLX_VLM_ENABLE_THINKING")
     if raw is None:
@@ -340,6 +229,17 @@ def get_server_thinking_start_token():
 
 def get_server_thinking_end_token():
     return os.environ.get("MLX_VLM_THINKING_END_TOKEN")
+
+
+def get_expert_cache_gb():
+    raw = os.environ.get("EXPERT_CACHE_GB", "")
+    if raw == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid EXPERT_CACHE_GB=%r; ignoring.", raw)
+        return None
 
 
 def get_quantized_kv_bits():
@@ -685,7 +585,11 @@ def load_model_resources(model_path: str, adapter_path: Optional[str]):
             os.environ.get("MLX_TRUST_REMOTE_CODE", "false").lower() == "true"
         )
         model, processor = load(
-            model_path, adapter_path, trust_remote_code=trust_remote_code
+            model_path,
+            adapter_path,
+            trust_remote_code=trust_remote_code,
+            expert_cache_gb=get_expert_cache_gb(),
+            max_kv_size=get_configured_context_limit(),
         )
         config = model.config
         logger.info("Model and processor loaded successfully.")
@@ -984,6 +888,7 @@ class _DiffusionBlockEmitter:
                 peak_memory=result.peak_memory,
                 prompt_tps=result.prompt_tps,
                 generation_tps=result.generation_tps,
+                cached_tokens=result.cached_tokens,
                 token_count=token_count,
             )
             self.block_text = []
@@ -1776,10 +1681,6 @@ class ResponseGenerator:
             self._run_diffusion()
             return
 
-        if self.draft_model is not None and self.draft_kind != "mtp":
-            self._run_speculative()
-            return
-
         generation_stream = mx.default_stream(mx.default_device())
 
         batch_gen = None
@@ -1795,11 +1696,7 @@ class ResponseGenerator:
                 active_batch = bool(active)
                 coalesce_s = (
                     get_speculative_batch_coalesce_s()
-                    if (
-                        not active_batch
-                        and self.draft_model is not None
-                        and self.draft_kind == "mtp"
-                    )
+                    if not active_batch and self.draft_model is not None
                     else 0.0
                 )
                 capacity = (
@@ -1976,7 +1873,13 @@ class ResponseGenerator:
                     rqueue.put(GenerationContext(uid=uid, prompt_tokens=prompt_tokens))
                     try:
                         self._generate_diffusion(
-                            uid, rqueue, raw_inputs, args, cancelled, log_state
+                            uid,
+                            rqueue,
+                            raw_inputs,
+                            args,
+                            cancelled,
+                            log_state,
+                            apc_semantic_hash=request.apc_semantic_hash,
                         )
                         rqueue.put(None)
                     except Exception as e:
@@ -1993,7 +1896,14 @@ class ResponseGenerator:
                 gc.collect()
 
     def _generate_diffusion(
-        self, uid, rqueue, raw_inputs, args, cancelled, log_state=None
+        self,
+        uid,
+        rqueue,
+        raw_inputs,
+        args,
+        cancelled,
+        log_state=None,
+        apc_semantic_hash=None,
     ):
         log_state = log_state or {"request_id": uid, "generated_tokens": 0}
         input_ids = raw_inputs.get("input_ids")
@@ -2023,6 +1933,9 @@ class ResponseGenerator:
         if args.logits_processors is not None:
             stream_kwargs["logits_processors"] = args.logits_processors
         stream_kwargs.update(args.diffusion_kwargs())
+        if self.apc_manager is not None and self.apc_mode is not None:
+            stream_kwargs["_apc_manager"] = self.apc_manager
+            stream_kwargs["_apc_semantic_hash"] = int(apc_semantic_hash or 0)
 
         emitter = _DiffusionBlockEmitter()
         prefill_logged = False
