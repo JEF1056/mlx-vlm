@@ -14,7 +14,8 @@ from mlx_vlm.speculative.common import (
 from mlx_vlm.speculative.dflash import _dflash_next_block_size
 from mlx_vlm.speculative.drafters.dflash2.dflash2 import DFlash2DraftModel
 from mlx_vlm.speculative.drafters.eagle3.config import Eagle3Config, TextConfig
-from mlx_vlm.speculative.drafters.eagle3.eagle3 import Eagle3DraftModel, _eagle3_next_block_size
+from mlx_vlm.speculative.drafters.eagle3.eagle3 import Eagle3DraftModel
+from mlx_vlm.speculative.eagle3 import _eagle3_next_block_size
 from mlx_vlm.speculative.drafters.gemma4_assistant.config import (
     Gemma4AssistantConfig,
     TextConfig as GemmaTextConfig,
