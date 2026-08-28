@@ -67,6 +67,7 @@ class TestLongContextSpeculativeMitigations(unittest.TestCase):
             draft_lens=[3] * 10,
             _ema_accept_rate=0.10,
             _ema_scale_down=0,
+            draft_ema_threshold=0.35,
         )
         # Scaled down due to low EMA
         dflash_bs = _dflash_next_block_size(draft_model, 4, 10)

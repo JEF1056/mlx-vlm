@@ -218,7 +218,7 @@ def generate_step(
     draft_model: Optional[nn.Module] = None,
     draft_kind: str = "dflash",
     draft_block_size: Optional[int] = None,
-    max_speculative_context_len: Optional[int] = 16384,
+    max_speculative_context_len: Optional[int] = None,
     prompt_cache_checkpoint: Optional[Callable[[int, List[Any]], None]] = None,
     prompt_cache_checkpoint_len: Optional[int] = None,
     seed: Optional[int] = None,

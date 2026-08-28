@@ -239,13 +239,17 @@ def _update_speculative_ema(
 def _get_ema_scaled_block_size(
     draft_model: nn.Module,
     base_block_size: int,
-    threshold: float = 0.35,
+    threshold: Optional[float] = None,
 ) -> int:
     """Scale draft block size down when EMA acceptance rate drops below threshold.
 
-    Dynamically scales: 3 -> 2 -> 1 -> 0 (eliminating drafter passes).
-    Recovers gradually when EMA acceptance rate is above threshold.
+    If threshold is None (default), returns base_block_size untouched.
     """
+    if threshold is None:
+        threshold = getattr(draft_model, "draft_ema_threshold", None)
+    if threshold is None:
+        return base_block_size
+
     ema = getattr(draft_model, "_ema_accept_rate", None)
     if ema is None:
         return base_block_size

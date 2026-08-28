@@ -242,8 +242,8 @@ def main():
     parser.add_argument(
         "--max-speculative-context-len",
         type=int,
-        default=16384,
-        help="Context length threshold (default: 16384) above which speculative drafting is bypassed.",
+        default=None,
+        help="Context length threshold above which speculative drafting is bypassed (default: None, disabled).",
     )
     parser.add_argument(
         "--draft-window-size",
@@ -266,8 +266,8 @@ def main():
     parser.add_argument(
         "--draft-ema-threshold",
         type=float,
-        default=0.35,
-        help="EMA acceptance rate threshold (default: 0.35) below which draft block size dynamically scales down.",
+        default=None,
+        help="EMA acceptance rate threshold below which draft block size dynamically scales down (default: None, disabled).",
     )
     parser.add_argument(
         "--max-num-seqs",
