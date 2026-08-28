@@ -26,6 +26,7 @@ def _build_rope(config: DFlashConfig):
 class DFlashAttention(nn.Module):
     def __init__(self, config: DFlashConfig, layer_idx: int):
         super().__init__()
+        self.config = config
         dim = config.hidden_size
         self.n_heads = config.num_attention_heads
         self.n_kv_heads = config.num_key_value_heads
