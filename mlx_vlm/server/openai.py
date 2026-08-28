@@ -1392,7 +1392,17 @@ async def responses_endpoint(request: Request):
                         )
                         metrics_finalized = True
                     logger.exception("Responses stream generation failed: %s", e)
-                    error_data = json.dumps({"error": str(e)})
+                    error_data = json.dumps(
+                        {
+                            "error": {
+                                "message": str(e),
+                                "type": "server_error",
+                                "code": (
+                                    "timeout" if "Timed out" in str(e) else "generation_error"
+                                ),
+                            }
+                        }
+                    )
                     yield f"data: {error_data}\n\n"
 
                 finally:
@@ -2090,7 +2100,17 @@ async def chat_completions_endpoint(request: ChatRequest, http_request: Request)
                         )
                         metrics_finalized = True
                     logger.exception("Chat completion stream generation failed: %s", e)
-                    error_data = json.dumps({"error": str(e)})
+                    error_data = json.dumps(
+                        {
+                            "error": {
+                                "message": str(e),
+                                "type": "server_error",
+                                "code": (
+                                    "timeout" if "Timed out" in str(e) else "generation_error"
+                                ),
+                            }
+                        }
+                    )
                     yield f"data: {error_data}\n\n"
 
                 finally:
