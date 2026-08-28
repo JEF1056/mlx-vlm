@@ -4974,24 +4974,65 @@ def _build_codec(tensor: mx.array, bits: float, mode: str, seed: int):
 
 
 class _QuantizedStateProxy:
-    """Wraps a quantized state tuple, providing .shape for model compatibility.
+    """Wraps a quantized state tuple, providing .shape, .ndim, .dtype, and indexing for model compatibility.
 
-    Some models access keys.shape[-2] after cache.update_and_fetch() to slice
-    masks. This proxy makes that work without dequantization.
+    Some models access keys.shape[-2] or slice keys[:, :, :end, :] after cache.update_and_fetch()
+    to slice masks and compute speculative verification attention.
     """
 
-    __slots__ = ("_state", "shape")
+    __slots__ = ("_state", "shape", "_offset", "_n_heads")
 
     def __init__(self, state, n_tokens: int, n_heads: int):
         self._state = state
-        # Mimic (B, H, T, D) shape — only T is needed by downstream code
+        self._offset = int(n_tokens)
+        self._n_heads = int(n_heads)
         self.shape = (1, n_heads, n_tokens, 0)
+
+    @property
+    def ndim(self) -> int:
+        return 4
+
+    @property
+    def dtype(self):
+        return mx.float32
+
+    def __len__(self) -> int:
+        return self._offset
 
     def __getattr__(self, name):
         return getattr(self._state, name)
 
     def __iter__(self):
-        return iter(self._state)
+        if isinstance(self._state, (tuple, list)):
+            return iter(self._state)
+        return iter([self._state])
+
+    def __getitem__(self, item):
+        if isinstance(item, int):
+            if isinstance(self._state, (tuple, list)):
+                return self._state[item]
+            return self
+        if isinstance(item, tuple):
+            seq_slice = None
+            if len(item) >= 3 and isinstance(item[2], slice):
+                seq_slice = item[2]
+            elif len(item) >= 1 and isinstance(item[-2], slice):
+                seq_slice = item[-2]
+            if seq_slice is not None:
+                start = 0 if seq_slice.start is None else int(seq_slice.start)
+                stop = (
+                    self._offset
+                    if seq_slice.stop is None
+                    else min(self._offset, int(seq_slice.stop))
+                )
+                if start > 0:
+                    sliced = _slice_state_range(self._state, start, stop)
+                else:
+                    sliced = _slice_state(self._state, stop)
+                return _QuantizedStateProxy(
+                    sliced, max(0, stop - start), self._n_heads
+                )
+        return self
 
 
 class TurboQuantKVCache(_BaseCache):

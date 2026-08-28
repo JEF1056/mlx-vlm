@@ -3600,6 +3600,8 @@ def _fill_batch_layer_cache(
                 value_bits=policy.value.bits,
             )
             c.update_and_fetch(merged_k, merged_v)
+            c.offset = mx.array(offset)
+            c.left_padding = mx.array(left_padding)
             return c
         c = BatchQuantizedKVCache(
             left_padding,
@@ -3607,6 +3609,8 @@ def _fill_batch_layer_cache(
             bits=int(policy.bits),
         )
         c.update_and_fetch(merged_k, merged_v)
+        c.offset = mx.array(offset)
+        c.left_padding = mx.array(left_padding)
         return c
 
     c = BatchKVCache(left_padding=list(left_padding))

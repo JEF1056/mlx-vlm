@@ -21,9 +21,9 @@ def should_quantize_kv_layer(layer_idx: int, num_layers: int) -> bool:
     accuracy gain from keeping the last layer unquantized doesn't justify the
     memory overhead for typical VLM workloads.
     """
-    # Quantize ALL layers when kv_bits is low (<=4), saving ~2-3% memory
-    # vs skipping the last layer — worthwhile on 48GB machines.
-    return True
+    if num_layers <= 2:
+        return True
+    return layer_idx != num_layers - 1
 
 
 def create_causal_mask(
@@ -777,7 +777,9 @@ class ArraysCache(_BaseCache):
 
     def extract(self, idx):
         cache = ArraysCache(len(self.cache))
-        cache.cache = [c[idx : idx + 1] for c in self.cache]
+        cache.cache = [
+            c[idx : idx + 1] if c is not None else None for c in self.cache
+        ]
         return cache
 
     def prepare(self, lengths=None, **kwargs):

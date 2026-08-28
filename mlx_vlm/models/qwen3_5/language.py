@@ -1093,7 +1093,11 @@ def _qwen3_5_left_padded_attention(
     scale: float,
     mask: Optional[mx.array],
 ) -> Optional[mx.array]:
-    if hasattr(cache, "bits") or queries.ndim != 4 or keys.ndim != 4:
+    if (
+        hasattr(cache, "bits")
+        or queries.ndim != 4
+        or getattr(keys, "ndim", None) != 4
+    ):
         return None
 
     pads = getattr(cache, "_qwen3_5_decode_left_padding", None)
@@ -1311,7 +1315,7 @@ class Qwen3_5Attention(nn.Module):
             mask = None
 
         if (target_verify and L > 1) or left_padded_decode:
-            output = _target_verify_left_padded_attention(
+            output = _qwen3_5_left_padded_attention(
                 queries, keys, values, cache=cache, scale=self.scale, mask=mask
             )
         else:
